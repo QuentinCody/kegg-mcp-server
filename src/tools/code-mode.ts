@@ -22,6 +22,8 @@ export function registerCodeMode(server: McpServer, env: CodeModeEnv): void {
 
 	const executeTool = createExecuteTool({
 		prefix: "kegg",
+		// Verifiable provenance: kegg_execute results carry a _meta.citation.
+		source: { id: "kegg", name: "KEGG", url: "https://www.kegg.jp" },
 		catalog: keggCatalog,
 		apiFetch,
 		doNamespace: env.KEGG_DATA_DO,
