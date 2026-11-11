@@ -1,5 +1,6 @@
 // interlinked-tdd: exempt
 import type { ApiCatalog } from "@bio-mcp/shared/codemode/catalog";
+import { genomeEndpoints, genomeWorkflow } from "./genomes";
 
 /**
  * KEGG REST API catalog.
@@ -10,10 +11,8 @@ import type { ApiCatalog } from "@bio-mcp/shared/codemode/catalog";
  * complementary to Reactome (human-focused) and WikiPathways (community-
  * curated).
  *
- * The REST endpoint at https://rest.kegg.jp is FREE for academic and
- * non-commercial use via interactive queries. Bulk download requires a
- * separate license via Pathway Solutions Inc. — this server only proxies
- * per-request queries, which is permitted under the public REST policy.
+ * The public REST endpoint is restricted to academic users. Service-provider
+ * and non-academic use have separate licensing requirements; see KEGG's policy.
  *
  * Most operations return tab-delimited plaintext. The api-adapter parses
  * each operation type into a structured row format:
@@ -28,22 +27,25 @@ import type { ApiCatalog } from "@bio-mcp/shared/codemode/catalog";
 export const keggCatalog: ApiCatalog = {
 	name: "KEGG REST",
 	baseUrl: "https://rest.kegg.jp",
-	version: "118.0",
 	auth: "none",
-	endpointCount: 12,
+	endpointCount: 12 + genomeEndpoints.length,
 	notes:
-		"- LICENSE: free for per-request academic/non-commercial use. Bulk downloads require a license — do not loop over `/list/genes` or fetch full DB dumps.\n" +
+		"- ACCESS: rest.kegg.jp is for academic users. Academic service providers and non-academic users need separately arranged licensing: https://www.kegg.jp/kegg/legal.html . Public HTTP access does not establish permission to redistribute or operate a service.\n" +
 		"- KEGG is path-segmented (no query strings): `/operation/arg1/arg2/...`. Build paths with template segments — `/list/{db}`, `/conv/{target}/{source}`, etc.\n" +
 		"- Most operations return TAB-DELIMITED text. The api-adapter parses these into arrays: list/find → [{id, name}]; conv/link → [{source, target}]; ddi → [{drug_a, drug_b, type, comment}]; get → {text}; info → {text}.\n" +
-		"- Append `/json` to a `/get/{entries}` path to receive structured JSON instead of KEGG flat-file text (e.g. `/get/hsa:7157/json`).\n" +
-		"- Multi-entry get: pipe-separated entries `cpd:C00031+cpd:C00029` (URL-encoded `+`). Max 10 entries per request per KEGG policy.\n" +
+		"- JSON is documented for BRITE hierarchies, e.g. `/get/br:br08301/json`; do not assume gene entries support it.\n" +
+		"- Multi-entry get: plus-separated entries `cpd:C00031+cpd:C00029`. Max 10 entries per request.\n" +
 		"- Database codes you'll use most: `pathway`, `module`, `ko` (KEGG orthology), `genes`, `genome`, `compound`, `glycan`, `reaction`, `enzyme`, `network`, `variant`, `disease`, `drug`, `dgroup`, `brite`. Organism codes: `hsa` (human), `mmu` (mouse), `dme` (fly), `eco` (E. coli K-12), etc.\n" +
-		"- External cross-reference databases for `conv`/`link`: `pubmed`, `ncbi-geneid`, `ncbi-proteinid`, `uniprot`, `pubchem`, `chebi`, `atc`, `jtc`, `ndc`, `yj`, `yk`.\n" +
+		"- Additional databases: vtax (viruses), vgenome (viral pathogens), vg (viral genes), vp (mature viral peptides), ag (addendum proteins), rmodule (reaction modules), ntmap (network variation maps). Use /info/{database} for current update/release and linked databases; these can have different dates.\n" +
+		"- External cross-references are operation-specific: conv supports gene/protein and chemical identifier conversion; link supports taxonomy, pubmed and drug classification codes. Taxonomy links use taxid: identifiers and optional ranks.\n" +
 		"- Find options for compound search: `formula` (molecular formula), `exact_mass`, `mol_weight`, `nop` (no opt — name only). Example: `/find/compound/C7H10O5/formula`.\n" +
-		"- Image/molfile/KGML/KCF outputs are returned as text (binary data is not supported by Code Mode). Use `kgml` for pathway XML, `mol` for compound molfile, `aaseq`/`ntseq` for gene sequences.\n" +
-		"- 404 from list/find → no matching entries (adapter returns []). 404 from get → invalid entry id.\n" +
-		"- KEGG enforces an undocumented soft rate limit. Avoid bursty parallel calls; the adapter retries on 429/500/502/503.",
+		"- Binary image/image2x requests are rejected before fetching. Use `kgml` for pathway XML, `mol`/`kcf` for chemistry text, `aaseq`/`ntseq` for gene sequences.\n" +
+		"- Each GET has an 8 MiB decoded-body limit and a 30-second deadline; no automatic retries. Complete HTTP 200 is required. Redirects, byte-range fragments, malformed UTF-8/JSON/tables and HTML error pages fail explicitly. Tool results include citations; complete envelopes above 30 KiB stage with lossless payload recovery.\n" +
+		"- HTTP 400/404 stay errors. Only a successful empty response becomes []. An invalid genome group is not an empty biological result.\n" +
+		"- Limit all calls to at most 3 per second as documented by KEGG. Pace sequential calls and coordinate callers across Worker instances; this adapter does not enforce a fleet-wide quota. Avoid whole-corpus crawling. Retries also count toward provider limits.",
+	workflows: [genomeWorkflow],
 	endpoints: [
+		...genomeEndpoints,
 		// ── info ──────────────────────────────────────────────────
 		{
 			method: "GET",
@@ -75,6 +77,7 @@ export const keggCatalog: ApiCatalog = {
 					required: true,
 					description: "KEGG database to enumerate.",
 					enum: [
+						"vtax", "vgenome", "vg", "vp", "ag", "rmodule", "ntmap",
 						"pathway",
 						"brite",
 						"module",
@@ -114,7 +117,8 @@ export const keggCatalog: ApiCatalog = {
 			method: "GET",
 			path: "/list/{database}/{org}",
 			summary:
-				"Organism-restricted entry list for module/orthology/etc. Example: `/list/module/hsa`.",
+				"Unsupported organism-specific list template: /list/module/hsa returns HTTP 400. For organism-to-module associations use /link/module/{organism}; /list/pathway/{organism} is supported.",
+			deprecated: true,
 			category: "list",
 			pathParams: [
 				{
@@ -151,7 +155,7 @@ export const keggCatalog: ApiCatalog = {
 					name: "query",
 					type: "string",
 					required: true,
-					description: "URL-encoded search string. Match is case-insensitive substring across id and name.",
+						description: "Literal search string; the template helper URL-encodes it once. Use + between keywords as documented by KEGG.",
 				},
 			],
 		},
@@ -159,7 +163,7 @@ export const keggCatalog: ApiCatalog = {
 			method: "GET",
 			path: "/find/{database}/{query}/{option}",
 			summary:
-				"Compound/glycan/drug search by chemical attribute. `formula`, `exact_mass`, `mol_weight`, or `nop` (name-only). Example: `/find/compound/C6H12O6/formula`.",
+				"Compound/drug search by chemical attribute. `formula`, `exact_mass`, `mol_weight`, or `nop` (name-only). Example: `/find/compound/C6H12O6/formula`.",
 			category: "find",
 			pathParams: [
 				{
@@ -167,7 +171,7 @@ export const keggCatalog: ApiCatalog = {
 					type: "string",
 					required: true,
 					description: "Chemistry-aware database.",
-					enum: ["compound", "glycan", "drug"],
+					enum: ["compound", "drug"],
 				},
 				{
 					name: "query",
@@ -190,7 +194,7 @@ export const keggCatalog: ApiCatalog = {
 			method: "GET",
 			path: "/get/{dbentries}",
 			summary:
-				"Fetch one or more KEGG entries (compound, gene, pathway, etc.). Multi-entry: pipe-separated like `hsa:7157+hsa:7158`. Default output is KEGG flat-file text wrapped in {text}.",
+				"Fetch one or more KEGG entries (compound, gene, pathway, etc.). Multi-entry: plus-separated like `hsa:7157+hsa:7158`. Default output is KEGG flat-file text wrapped in {text}.",
 			category: "get",
 			pathParams: [
 				{
@@ -206,7 +210,7 @@ export const keggCatalog: ApiCatalog = {
 			method: "GET",
 			path: "/get/{dbentries}/{option}",
 			summary:
-				"Fetch entries with a non-default formatting option. `json` for structured JSON, `aaseq`/`ntseq` for protein/nucleotide sequences (gene entries), `mol`/`kcf` for chemistry, `kgml` for pathway XML, `image` for PNG (returned as binary text — not recommended through Code Mode).",
+				"Fetch text formats: `json` for BRITE hierarchies, `aaseq`/`ntseq` for gene sequences, `mol`/`kcf` for chemistry and `kgml` for pathway XML. Binary images are unsupported.",
 			category: "get",
 			pathParams: [
 				{
@@ -220,7 +224,7 @@ export const keggCatalog: ApiCatalog = {
 					type: "string",
 					required: true,
 					description: "Output format.",
-					enum: ["aaseq", "ntseq", "mol", "kcf", "image", "conf", "kgml", "json"],
+						enum: ["aaseq", "ntseq", "mol", "kcf", "conf", "kgml", "json"],
 				},
 			],
 		},
@@ -244,7 +248,7 @@ export const keggCatalog: ApiCatalog = {
 					type: "string",
 					required: true,
 					description:
-						"Source database. External: `pubmed`, `ncbi-geneid`, `ncbi-proteinid`, `uniprot`, `pubchem`, `chebi`. Internal: organism code or KEGG db.",
+							"Source database. External: `ncbi-geneid`, `ncbi-proteinid`, `uniprot`, `pubchem`, `chebi`. PubMed uses link rather than conv. Internal: organism code or KEGG db.",
 				},
 			],
 		},
@@ -275,7 +279,7 @@ export const keggCatalog: ApiCatalog = {
 			method: "GET",
 			path: "/link/{target_db}/{source}",
 			summary:
-				"Find related entries across databases via cross-references. Source can be a KEGG database/organism code OR pipe-separated entries. Examples: `/link/pathway/hsa:7157` (pathways for TP53), `/link/disease/drug` (every disease→drug edge).",
+				"Find related entries across databases via cross-references. Source can be a KEGG database/organism code OR plus-separated entries. Examples: `/link/pathway/hsa:7157` (pathways for TP53), `/link/disease/drug` (every disease→drug edge).",
 			category: "link",
 			pathParams: [
 				{
@@ -299,7 +303,7 @@ export const keggCatalog: ApiCatalog = {
 			method: "GET",
 			path: "/ddi/{dbentry}",
 			summary:
-				"Drug-drug interactions. Pass one or more drug IDs separated by `+`. Returns rows of `[drug_a, drug_b, type, comment]`. Type values include `CI` (contraindication), `P` (precaution), and `M` (monitor).",
+				"Drug-drug interaction evidence extracted from Japanese drug labels, with provider CI (contraindication) and P (precaution) annotations retained. An empty result does not establish safety or complete DDI coverage. Returns rows of [drug_a, drug_b, type, comment].",
 			category: "ddi",
 			pathParams: [
 				{
@@ -307,7 +311,7 @@ export const keggCatalog: ApiCatalog = {
 					type: "string",
 					required: true,
 					description:
-						"Drug ID or pipe-separated list (e.g. `dr:D00139` or `dr:D00139+dr:D00140`).",
+							"Drug ID or plus-separated list (e.g. `dr:D00139` or `dr:D00139+dr:D00140`).",
 				},
 			],
 		},

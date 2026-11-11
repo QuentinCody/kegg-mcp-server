@@ -80,7 +80,7 @@ assertContains('src/spec/catalog.ts', catalogContent, 'rest.kegg.jp', 'catalog t
 
 const adapterContent = readFile('src/lib/api-adapter.ts');
 assertContains('src/lib/api-adapter.ts', adapterContent, 'parseTabSeparated', 'api-adapter parses tab-delimited responses');
-assertContains('src/lib/api-adapter.ts', adapterContent, 'detectOperation', 'api-adapter detects KEGG operation');
+assertContains('src/lib/api-adapter.ts', adapterContent, 'keggRequest', 'api-adapter validates KEGG operation');
 
 const httpContent = readFile('src/lib/http.ts');
 assertContains('src/lib/http.ts', httpContent, 'rest.kegg.jp', 'http.ts targets rest.kegg.jp');

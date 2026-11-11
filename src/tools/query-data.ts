@@ -1,20 +1,17 @@
-// interlinked-tdd: exempt
 import type { McpServer } from "@bio-mcp/shared/mcp";
 import { z } from "zod";
 import { createQueryDataHandler } from "@bio-mcp/shared/staging/utils";
+import { keggResponse } from "../lib/tool-result";
 
 interface QueryEnv {
 	KEGG_DATA_DO?: unknown;
 }
 
-const MAX_LIMIT = 10000;
-const DEFAULT_LIMIT = 100;
-
 export function registerQueryData(server: McpServer, env?: QueryEnv): void {
 	const handler = createQueryDataHandler("KEGG_DATA_DO", "kegg");
 
-	server.registerTool(
-		"kegg_query_data",
+	for (const name of ["kegg_query_data", "mcp_kegg_query_data"]) server.registerTool(
+		name,
 		{
 			title: "Query Staged KEGG Data",
 			description:
@@ -26,15 +23,14 @@ export function registerQueryData(server: McpServer, env?: QueryEnv): void {
 					.number()
 					.int()
 					.positive()
-					.max(MAX_LIMIT)
-					.default(DEFAULT_LIMIT)
+					.max(10_000)
 					.optional()
-					.describe(`Maximum number of rows to return (default: ${DEFAULT_LIMIT})`),
+					.describe("Maximum number of rows to return (default: 100)"),
 			},
 		},
 		async (args, extra) => {
 			const runtimeEnv = env || (extra as { env?: QueryEnv })?.env || {};
-			return handler(args as Record<string, unknown>, runtimeEnv as Record<string, unknown>);
+			return keggResponse(() => handler(args as Record<string, unknown>, runtimeEnv as Record<string, unknown>), runtimeEnv, name, extra, args);
 		},
 	);
 }
